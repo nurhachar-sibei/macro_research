@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import Lasso, LinearRegression
 import warnings
 warnings.filterwarnings('ignore')
 print("="*100)
@@ -136,7 +136,6 @@ loadings = pd.DataFrame(
     index=ret_12m_scaled.columns,
     columns=[f'PC{i+1}' for i in range(n_components)]
 )
-
 # ================================
 # 步骤3：标准化宏观变量
 # ================================
@@ -148,16 +147,45 @@ Macro_scaled = pd.DataFrame(
     scaler_macro.fit_transform(macro_data_clean),
     index=macro_data_clean.index,
     columns=macro_factors
-)
-
+)*0.1
+print(Macro_scaled)
 print(f"✓ 宏观变量标准化完成")
 
 # ================================
 # 步骤4：跳过Lasso，直接使用标准化宏观变量
 # ================================
-print("\n【步骤4】使用标准化宏观变量（跳过Lasso投影）")
+print("\n【步骤4】Lasso回归投影（将宏观变量投影到主成分上）")
 print("-"*100)
-print("✓ 直接使用标准化的宏观变量进行回归分析")
+
+# 使用Lasso回归将每个宏观变量投影到主成分上
+Macro_proj = pd.DataFrame(index=Macro_scaled.index, columns=macro_factors)
+lasso_coefs = pd.DataFrame(index=[f'PC{i+1}' for i in range(n_components)], columns=macro_factors)
+
+alpha_lasso = 0.01  # Lasso正则化参数，可调整（降低以减少正则化强度）
+
+for macro_var in macro_factors:
+    # Lasso回归: Macro_var = PC_matrix * coef
+    y = Macro_scaled[macro_var].values.reshape(-1, 1)
+    X = PC_matrix
+    
+    lasso = Lasso(alpha=alpha_lasso, max_iter=10000)
+    lasso.fit(X, y)
+    
+    # 投影后的宏观变量
+    Macro_proj[macro_var] = lasso.predict(X)
+    
+    # 记录系数
+    lasso_coefs[macro_var] = lasso.coef_
+    
+    # 打印信息
+    macro_name = macro_mapping.get(macro_var, macro_var)
+    non_zero = np.sum(np.abs(lasso.coef_) > 1e-6)
+    print(f"✓ {macro_name:8s}: 使用了{non_zero}个主成分, R²={lasso.score(X, y):.4f}")
+
+print(f"\n各宏观变量在主成分上的Lasso系数:")
+lasso_coefs_display = lasso_coefs.copy()
+lasso_coefs_display.columns = [macro_mapping.get(x, x) for x in lasso_coefs_display.columns]
+print(lasso_coefs_display.round(4))
 
 # ================================
 # 步骤5：一元线性回归求暴露度
@@ -173,7 +201,7 @@ for asset in ret_12m_scaled.columns:
     for macro_var in macro_factors:
         # 回归: R_i = α + β_j * F_j + ε
         y = ret_12m_scaled[asset].values.reshape(-1, 1)
-        X = Macro_scaled[macro_var].values.reshape(-1, 1)
+        X = Macro_proj[macro_var].values.reshape(-1, 1)
         
         reg = LinearRegression()
         reg.fit(X, y)
